@@ -60,8 +60,10 @@ def load_runs(args):
     found = list(indir.glob(args.pattern))
     assert found, (indir, args.pattern)
     for filename in found:
+      print("filename:", filename)
       if args.newstyle:
-        _, task, method, seed = filename.parent.name.split('-')
+        #_, task, method, seed = filename.parent.name.split('-')
+        task, method, seed = "gym_pendulum", "dreamer", "0"
       else:
         task, method, seed = str(filename).split('/')[-4: -1]
       if not (methods.search(method) and tasks.search(task)):
