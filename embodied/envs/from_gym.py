@@ -5,12 +5,15 @@ import embodied
 import gymnasium as gym
 import numpy as np
 
+import pickle
+import os
+
 
 class FromGym(embodied.Env):
 
-  def __init__(self, env, obs_key='image', act_key='action', **kwargs):
+  def __init__(self, env, obs_key='image', act_key='action', length=50, save_episodes = False, **kwargs):
     if isinstance(env, str):
-      self._env = gym.make(env, **kwargs)
+      self._env = gym.make(env, max_episode_steps=length, **kwargs)
     else:
       assert not kwargs, kwargs
       self._env = env
@@ -22,6 +25,8 @@ class FromGym(embodied.Env):
     self._truncated = True
     self._done = True
     self._info = None
+    self._current_obs = None
+    self._save_episodes = save_episodes
 
   @property
   def env(self):
@@ -60,6 +65,7 @@ class FromGym(embodied.Env):
     if action['reset'] or self._done:
       self._done= False
       obs, self._info = self._env.reset()
+      self._current_obs = obs
       return self._obs(obs, 0.0, is_first=True)
     if self._act_dict:
       action = self._unflatten(action)
@@ -67,6 +73,24 @@ class FromGym(embodied.Env):
       action = action[self._act_key]
     obs, reward, self._terminated, self._truncated, self._info = self._env.step(action)
     self._done = self._terminated or self._truncated
+    temp_dict = dict(
+                      Observation=self._current_obs, 
+                      Action=action, 
+                      Next=obs, 
+                      Reward=reward, 
+                      Done=self._done
+                    )
+    if self._save_episodes:
+      if not os.path.exists("replay.pkl"):
+        with open("replay.pkl", "wb") as f:
+          pickle.dump([temp_dict], f)
+      else:
+        with open("replay.pkl", "rb") as f:
+          replay = pickle.load(f)
+        replay.append(temp_dict)
+        with open("replay.pkl", "wb") as f:
+          pickle.dump(replay, f)
+    self._current_obs = obs
     return self._obs(
         obs, reward,
         is_last=bool(self._done),

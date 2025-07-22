@@ -90,8 +90,35 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   cp.load_or_save()
 
   print('Start training loop')
-  policy = lambda *args: agent.policy(*args, mode='train')
+  policy = lambda *args, **kwargs: agent.policy(*args, **kwargs, mode='train')
+
   driver.reset(agent.init_policy)
+
+  if args.pre_episodes:
+    import pickle
+    with open(args.pre_episodes, "rb") as f:
+      pre_episodes = pickle.load(f)
+    driver.pre_steps(policy, pre_episodes)
+    # report once
+    agg = elements.Agg()
+    for _ in range(args.consec_report * args.report_batches):
+      carry_report, mets = agent.report(carry_report, next(stream_report))
+      agg.add(mets)
+    logger.add(agg.result(), prefix='report')
+    # logger once
+    logger.add(train_agg.result())
+    logger.add(epstats.result(), prefix='epstats')
+    logger.add(replay.stats(), prefix='replay')
+    logger.add(usage.stats(), prefix='usage')
+    logger.add({'fps/policy': policy_fps.result()})
+    logger.add({'fps/train': train_fps.result()})
+    logger.add({'timer': elements.timer.stats()['summary']})
+    logger.write()
+    # save once
+    cp.save()
+
+  #step.reset()
+  # args.steps should be approximately larger than #pre_episodes / self.length
   while step < args.steps:
 
     driver(policy, steps=10)

@@ -63,6 +63,7 @@ def main(argv=None):
       consec_train=config.consec_train,
       consec_report=config.consec_report,
       replay_context=config.replay_context,
+      pre_episodes=config.pre_episodes,
   )
 
   if config.script == 'train':

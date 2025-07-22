@@ -151,8 +151,8 @@ class Agent(embodied.Agent):
         first_outnums=(1,), **shared_kwargs)
     self._policy = transform.apply(
         nj.pure(self.model.policy), self.policy_mesh,
-        (pp, pm, ps, ps), (ps, ps, ps), ar,
-        static_argnums=(4,), **shared_kwargs)
+        (pp, pm, ps, ps, ps), (ps, ps, ps), ar,
+        static_argnums=(5,), **shared_kwargs)
 
     self.policy_lock = threading.Lock()
     self.train_lock = threading.Lock()
@@ -217,7 +217,7 @@ class Agent(embodied.Agent):
         self.params, self._seeds(0, self.train_mirrored), batch_size)
 
   @elements.timer.section('jaxagent_policy')
-  def policy(self, carry, obs, mode='train'):
+  def policy(self, carry, obs, known_act=None, mode='train'):
     if not self.jaxcfg.enable_policy:
       raise Exception('Policy not available when enable_policy=False')
     assert not any(k.startswith('log/') for k in obs), obs.keys()
@@ -233,10 +233,12 @@ class Agent(embodied.Agent):
         self.n_actions.value += 1
       seed = self._seeds(counter, self.policy_mirrored)
       carry = internal.to_global(self._stack(carry), self.policy_sharded)
+      if known_act is not None:
+        known_act = internal.device_put(known_act, self.policy_sharded)
 
     with self.policy_lock:
       carry, acts, outs = self._policy(
-          self.policy_params, seed, carry, obs, mode)
+          self.policy_params, seed, carry, obs, known_act, mode)
 
     if self.jaxcfg.enable_policy:
       with self.policy_lock:

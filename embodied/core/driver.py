@@ -45,6 +45,73 @@ class Driver:
     else:
       [env.close() for env in self.envs]
 
+  def pre_steps(self, policy, preEpisodes):
+    """
+    Pre_steps with a number of episodes.
+    preEpisodes: [
+                    [(s, a, s', r), (s', a', s'', r')], 
+                    ...,
+                    ...,
+                  ]
+    no parallel
+    """
+    start = 0
+    while start < len(preEpisodes):
+      pre_episodes = preEpisodes[start:start + self.length]
+      print("pre_episodes:", pre_episodes, flush=True)
+      num_episodes = len(pre_episodes)
+      obs_matrix = np.array([[tup[0] for tup in episode] for episode in pre_episodes])
+      reward_matrix = np.array([[tup[3] for tup in episode] for episode in pre_episodes])
+      action_matrix = np.array([[tup[1] for tup in episode] for episode in pre_episodes])
+      print("obs_matrix:", obs_matrix.shape, "\n", obs_matrix, flush=True)
+      print("reward_matrix:", reward_matrix.shape, "\n", reward_matrix, flush=True)
+      print("action_matrix:", action_matrix.shape, "\n", action_matrix, flush=True)
+
+      for le in range(obs_matrix.shape[1]):
+        # For the current implementation, 
+        # the following two lines are unnecessary for preload,
+        # but the infomation of is_first and is_last is still useful for training.
+        is_first = True if le == 0 else False # for 'reset' inside policy
+        is_last = True if le == obs_matrix.shape[1] - 1 else False # for mask later
+        obs = [
+                self.envs[0]._obs(obs, reward, is_first=is_first, is_last=is_last) 
+                for obs, reward in zip(obs_matrix[:, le], reward_matrix[:, le])
+              ]
+        obs = {k: np.stack([x[k] for x in obs]) for k in obs[0].keys()}
+        logs = {k: v for k, v in obs.items() if k.startswith('log/')}
+        obs = {k: v for k, v in obs.items() if not k.startswith('log/')}
+        print("obs:", obs, flush=True)
+
+        acts = {
+            'action': np.array(action_matrix[:, le])
+            }
+        print("acts:", acts, flush=True)
+        #acts['reset'] = np.zeros(num_episodes, bool)
+        assert all(len(x) == num_episodes for x in acts.values())
+        assert all(isinstance(v, np.ndarray) for v in acts.values())
+        # acts = [{k: v[i] for k, v in acts.items()} for i in range(self.length)]
+        # if self.parallel:
+        #   [pipe.send(('step', act)) for pipe, act in zip(self.pipes, acts)]
+        #   obs = [self._receive(pipe) for pipe in self.pipes]
+        # else:
+        #   obs = [env.step(act) for env, act in zip(self.envs, acts)]
+        # assert all(len(x) == self.length for x in obs.values()), obs
+        self.carry, acts, outs = policy(self.carry, obs, known_act=acts, **self.kwargs)
+        assert all(k not in acts for k in outs), (
+            list(outs.keys()), list(acts.keys()))
+        if obs['is_last'].any():
+          mask = ~obs['is_last']
+          acts = {k: self._mask(v, mask) for k, v in acts.items()}
+        self.acts = {**acts, 'reset': obs['is_last'].copy()}
+        trans = {**obs, **acts, **outs, **logs}
+        for i in range(num_episodes):
+          trn = elements.tree.map(lambda x: x[i], trans)
+          [fn(trn, i, **self.kwargs) for fn in self.callbacks]
+        #step += len(obs['is_first'])
+        #episode += obs['is_last'].sum()
+        #return step, episode
+        start += self.length
+
   def on_step(self, callback):
     self.callbacks.append(callback)
 
@@ -54,25 +121,25 @@ class Driver:
       step, episode = self._step(policy, step, episode)
 
   def _step(self, policy, step, episode):
-    acts = self.acts
+    acts = self.acts # acts, dict
     assert all(len(x) == self.length for x in acts.values())
     assert all(isinstance(v, np.ndarray) for v in acts.values())
-    acts = [{k: v[i] for k, v in acts.items()} for i in range(self.length)]
+    acts = [{k: v[i] for k, v in acts.items()} for i in range(self.length)] # acts, list
     if self.parallel:
       [pipe.send(('step', act)) for pipe, act in zip(self.pipes, acts)]
       obs = [self._receive(pipe) for pipe in self.pipes]
     else:
-      obs = [env.step(act) for env, act in zip(self.envs, acts)]
+      obs = [env.step(act) for env, act in zip(self.envs, acts)] # obs, list
     obs = {k: np.stack([x[k] for x in obs]) for k in obs[0].keys()}
     logs = {k: v for k, v in obs.items() if k.startswith('log/')}
-    obs = {k: v for k, v in obs.items() if not k.startswith('log/')}
+    obs = {k: v for k, v in obs.items() if not k.startswith('log/')} # obs, dict
     assert all(len(x) == self.length for x in obs.values()), obs
-    self.carry, acts, outs = policy(self.carry, obs, **self.kwargs)
+    self.carry, acts, outs = policy(self.carry, obs, **self.kwargs) # acts, dict
     assert all(k not in acts for k in outs), (
         list(outs.keys()), list(acts.keys()))
     if obs['is_last'].any():
       mask = ~obs['is_last']
-      acts = {k: self._mask(v, mask) for k, v in acts.items()}
+      acts = {k: self._mask(v, mask) for k, v in acts.items()} # acts, dict
     self.acts = {**acts, 'reset': obs['is_last'].copy()}
     trans = {**obs, **acts, **outs, **logs}
     for i in range(self.length):
