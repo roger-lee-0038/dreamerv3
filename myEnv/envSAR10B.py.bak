@@ -1,0 +1,248 @@
+from typing import Optional
+import numpy as np
+import gymnasium as gym
+import math
+import sys
+sys.path.insert(0,"/export/home/liwangzhen/Research/Hierarchical")
+from SAR10B import COM
+from behaviourSAR.behaviourSAR import BehaviourSAR
+from behaviourSAR import adc_eval
+
+
+class SAR10BitEnv(gym.Env):
+
+    def __init__(self, init_num=1, max_iter=100):
+        self.vdd = 1.2
+        self.N = 10
+        self.tsample = 10
+        self.tone = 61
+        self.numPoints = 128
+        self.add_noise = False
+        self.add_mismatch = True
+        self.zvtc = True
+
+        self.tclk = self.tsample/(self.N+2)
+        self.tstop = (4 + self.numPoints) * self.tsample
+        self.fin = (1e9 / self.tsample) * (self.tone / self.numPoints)
+
+        #timePoints = np.arange(40, tstop, 0.1).tolist()
+        #inputpSig = [inputFunp(t*1e-9) for t in timePoints]
+        #inputnSig = [inputFunn(t*1e-9) for t in timePoints]
+        #samplePoints = np.arange(2*tclk, tstop, tsample).tolist()
+        #samplepSig = [inputFunp(t*1e-9) for t in samplePoints]
+        #samplenSig = [inputFunn(t*1e-9) for t in samplePoints]
+        self.fftPoints = np.arange(
+                            5*self.tsample-0.25*self.tclk, 
+                            self.tstop+self.tsample-0.25*self.tclk, 
+                            self.tsample,
+                         ).tolist()
+
+        self.bsar = BehaviourSAR(
+                            N=10, 
+                            vrefp = self.vdd,
+                            vrefn = 0.6*self.vdd,
+                            vcm = 0.5*self.vdd,
+                            sampleTime = 2*self.tclk,
+                            convTime = 0.5*self.tclk,
+                            add_noise = self.add_noise,
+                            add_mismatch = self.add_mismatch,
+                            zvtc = self.zvtc,
+                            set_rc = False
+                        )
+        self.com = COM()
+        
+        # The number of objectives
+        self.n_objs = 3
+        # The number of initial points
+        self.init_num = init_num
+        # The maximal number of iterations
+        self.max_iter = max_iter
+        # The counter for maximal number of iterations
+        self.termination_cnt = 0
+
+        self.current_action = None
+        self.current_obs = None
+        self.weights = np.random.rand(self.n_objs)
+        self.weights = self.weights / self.weights.sum()
+        self.weights = self.weights * np.array([1e-1, 1e4, 1e9])
+        self.current_best = np.inf
+
+        self.observation_space = gym.spaces.Box(
+            low = -1e30,
+            high = 1e30,
+            shape = (self.init_num, self.n_objs),
+            dtype = np.float32,
+        )
+
+        self.action_space = gym.spaces.Box(
+            low = 0.0,
+            high = 1.0,
+            shape = (self.init_num, 3 + self.com.in_dim),
+            dtype = np.float32,
+        )
+
+    def inputFunp(self, t):
+        return 0.8 * self.vdd + 0.95 * 0.84 * 0.5 * 0.5 * self.vdd * math.sin(2 * math.pi * self.fin * t)
+        #return 0.8 * vdd + 0.2 * vdd * math.sin(2 * math.pi * fin * t)
+
+    def inputFunn(self, t):
+        return 0.8 * self.vdd - 0.95 * 0.84 * 0.5 * 0.5 * self.vdd * math.sin(2 * math.pi * self.fin * t)
+        #return 0.8 * vdd - 0.2 * vdd * math.sin(2 * math.pi * fin * t)
+
+    def d2a(self, reglist, vrefp, vrefn):
+        a = 0
+        for i in reglist:
+            temp = 1 if i > (vrefp+vrefn)/2 else -1
+            a = a * 2 + temp
+        return 0.5 * self.vdd * a / 2 ** len(reglist) + 0.5 * self.vdd
+
+    def _get_action(self, action, initial=False):
+        if initial:
+            return action
+        else:
+            return np.clip(
+                        self.current_action + 2*action - 1,
+                        0,
+                        1,
+                    )
+    
+    def _get_obs(self, action):
+        obs = []
+        for sub_action in action:
+            sub_action_comPart = sub_action[3:]
+            comResults = self.com(sub_action_comPart)
+            self.bsar.com_noise = comResults["irn"]
+            self.bsar.com_power = comResults["Power"]
+            self.bsar.com_cpp = comResults["Cpp"]
+            self.bsar.com_vmeta = comResults["Vmeta"]
+            self.bsar.com_area = comResults["Area"]
+
+            sub_action_rcPart = sub_action[:3]
+            WRP, WRN, WC = self._get_rc(sub_action_rcPart)
+            self.bsar.WRP = WRP
+            self.bsar.WRN = WRN
+            self.bsar.WC = WC
+
+            self.bsar.initialize_rc()
+            outputFun = self.bsar(self.inputFunp, self.inputFunn)
+            vregnSig = []
+            E = 0
+            comE = 0
+            for t in self.fftPoints:
+                vxp, vxn, vmidp, vmidn, vcom, vregp, vregn, E_temp, comE_temp = outputFun(t*1e-9)
+                #vxpSig.append(vxp)
+                #vxnSig.append(vxn)
+                #vmidpSig.append(vmidp)
+                #vmidnSig.append(vmidn)
+                #vcomSig.append(vcom)
+                #vregpSig.append(vregp)
+                vregnSig.append(vregn)
+                E += E_temp
+                comE += comE_temp
+            analogs = [self.d2a(reglist, self.vdd, 0.6*self.vdd) for reglist in vregnSig]
+            _, _, stats = adc_eval.spectrum.analyze( 
+                            analogs, 
+                            self.numPoints, 
+                            fs = 1e9/self.tsample,
+                            #dr = 1,
+                            harmonics = 10, 
+                            leak = 1,
+                            #window = 'hanning',
+                            no_plot = True,
+                            yaxis = 'power',
+                            single_sided = True,
+                            fscale = "MHz"
+                          )
+
+            capPower = E * 1e9 / (self.numPoints * self.tsample)
+            comPower = comE * 1e9 / (self.numPoints * self.tsample)
+            totPower = capPower + comPower
+            totArea = self.bsar._getArea()
+
+            obs.append([stats['sndr']['dBc'], totPower, totArea])
+
+        return np.array(obs, dtype=np.float32)
+
+    def _get_rc(self, rc_array):
+        wrpRange = [4e-7, 10e-6]
+        wrnRange = [2e-7, 5e-6]
+        wcRange = [1e-6, 10e-6]
+        wrp, wrn, wc = rc_array.tolist()
+        WRP = wrpRange[0]+wrp*(wrpRange[1]-wrpRange[0])
+        WRN = wrnRange[0]+wrn*(wrnRange[1]-wrnRange[0])
+        WC = wcRange[0]+wc*(wcRange[1]-wcRange[0])
+        return WRP, WRN, WC
+
+    def _get_reward(self, obs):
+        val = np.average(np.tensordot(obs, self.weights, axes=([-1], [-1])))
+        if val < self.current_best:
+            reward = self.current_best - val
+            self.current_best = val
+        else:
+            reward = 0
+        return reward
+
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+        # We need the following line to seed self.np_random
+        super().reset(seed=seed)
+
+        #if options.get("init_num"):
+        #    init_num = options.get("init_num")
+        #    self.init_num = init_num
+
+        #    self.observation_space = gym.spaces.Box(
+        #        shape = (self.init_num, self.n_objs),
+        #        dtype = np.float32,
+        #    )
+
+        #    self.action_space = gym.spaces.Box(
+        #        low = 0.0,
+        #        high = 1.0,
+        #        shape = (self.init_num, 3 + self.com.in_dim),
+        #        dtype = np.float32,
+        #    )
+        if seed is not None:
+            #self.observation_space.seed(seed)
+            self.action_space.seed(seed)
+        #if options.get("max_iter"):
+        #    self.max_iter = options.get("max_iter")
+        self.termination_cnt = 0
+
+        # Initialize
+        self.current_action = self.action_space.sample()
+        self.current_obs = self._get_obs(self.current_action)
+
+        self.weights = np.random.rand(self.n_objs)
+        self.weights = self.weights / self.weights.sum()
+        self.weights = self.weights * np.array([1e-1, 1e4, 1e9])
+
+        val = np.average(np.tensordot(self.current_obs, self.weights, axes=([-1], [-1])))
+        self.current_best = val
+
+        info = {"current_obs": self.current_obs, "current_action": self.current_action, "current_best": self.current_best}
+        print(f"##### info in reset: {info} #####")
+
+        return self.current_obs, info
+
+    def step(self, action):
+        # Map the action to obs
+        self.current_action = self._get_action(action, initial=False)
+        self.current_obs = self._get_obs(self.current_action)
+        reward = self._get_reward(self.current_obs)
+        info = {"current_obs": self.current_obs, "current_action": self.current_action, "current_best": self.current_best}
+        print(f"##### info in step: {info} #####")
+        print(f"##### Reward: {reward} #####")
+
+        self.termination_cnt += 1
+        print(f"##### Termination_cnt: {self.termination_cnt} #####")
+        terminated = False
+        if self.termination_cnt == self.max_iter:
+            terminated = True
+        truncated = False
+
+        return self.current_obs, reward, terminated, truncated, info
+
+gym.register(
+    id="SAR10B-v0",
+    entry_point=SAR10BitEnv,
+)

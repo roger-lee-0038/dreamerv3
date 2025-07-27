@@ -118,7 +118,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     cp.save()
 
   #step.reset()
-  # args.steps should be approximately larger than #pre_episodes / self.length
+  target_step = step + args.steps
   while step < args.steps:
 
     driver(policy, steps=10)

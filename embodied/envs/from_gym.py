@@ -8,6 +8,9 @@ import numpy as np
 import pickle
 import os
 
+import sys
+sys.path.append("myEnv")
+
 
 class FromGym(embodied.Env):
 

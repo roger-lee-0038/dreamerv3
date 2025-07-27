@@ -34,8 +34,9 @@ defaults:
     atari100k: {size: [64, 64], repeat: 4, sticky: False, gray: False, actions: needed, lives: unused, noops: 30, autostart: False, resize: pillow, clip_reward: False}
     dmlab: {size: [64, 64], repeat: 4, episodic: True, use_seed: True}
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
-    dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
+    dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1, length: 50}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
+    gym: {length: 50}
 
   replay:
     size: 5e6
@@ -158,6 +159,41 @@ pendulum:
   run: {steps: 1e6, train_ratio: 64}
   pre_episodes: 'episodes.pkl'
 
+sar10b-v0: &badzerorun4
+  task: gym_envSAR10Bv0:SAR10B-v0
+  run: {steps: 1e4, envs: 4, train_ratio: 32, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+
+sar10b-v1: &badnegativerun3
+  task: gym_envSAR10Bv1:SAR10B-v1
+  run: {steps: 1e4, envs: 4, train_ratio: 32, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+
+df1-v0: &badzerorun6
+  task: gym_envDF1v0:DF1-v0
+  run: {steps: 5e5, envs: 4, train_ratio: 64, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+
+df1-v0local: &badzerolocalrun7
+  task: gym_envDF1v0_local:DF1-v0local
+  run: {steps: 5e5, envs: 4, train_ratio: 64, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+
+df1-v1: &badnegativerun5
+  task: gym_envDF1:DF1-v1
+  run: {steps: 1e6, envs: 4, train_ratio: 64, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+
 minecraft:
   task: minecraft_diamond
 
@@ -212,7 +248,7 @@ debug:
   batch_length: 10
   report_length: 5
   jax: {platform: cpu, debug: True, prealloc: False}
-  run: {envs: 1, report_every: 10, log_every: 1, save_every: 15, train_ratio: 8, debug: True}
+  run: {envs: 1, report_every: 10, log_every: 5, save_every: 15, train_ratio: 8, debug: True}
   replay.size: 1e4
   agent:
     .*\.bins: 5
