@@ -60,6 +60,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   driver.on_step(lambda tran, _: policy_fps.step())
   driver.on_step(replay.add)
   driver.on_step(logfn)
+  driver.on_pre_step(lambda tran, _: step.increment())
+  driver.on_pre_step(lambda tran, _: policy_fps.step())
+  driver.on_pre_step(replay.add)
+  driver.on_pre_step(logfn)
 
   stream_train = iter(agent.stream(make_stream(replay, 'train')))
   stream_report = iter(agent.stream(make_stream(replay, 'report')))
@@ -69,8 +73,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
   def trainfn(tran, worker):
     if len(replay) < args.batch_size * args.batch_length:
+      print(f"len replay {len(replay)} < {args.batch_size} * {args.batch_length}, skip training")
       return
     for _ in range(should_train(step)):
+      print(f"step for train: {step}")
       with elements.timer.section('stream_next'):
         batch = next(stream_train)
       carry_train[0], outs, mets = agent.train(carry_train[0], batch)
@@ -119,7 +125,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
   #step.reset()
   target_step = step + args.steps
-  while step < args.steps:
+  while step < target_step:
 
     driver(policy, steps=10)
 

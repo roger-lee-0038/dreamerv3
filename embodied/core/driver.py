@@ -24,10 +24,12 @@ class Driver:
           for i, (fn, pipe) in enumerate(zip(fns, pipes))]
       self.pipes[0].send(('act_space',))
       self.act_space = self._receive(self.pipes[0])
+      self.envs = [fn() for fn in make_env_fns]
     else:
       self.envs = [fn() for fn in make_env_fns]
       self.act_space = self.envs[0].act_space
     self.callbacks = []
+    self.pre_callbacks = []
     self.acts = None
     self.carry = None
     self.reset()
@@ -44,6 +46,9 @@ class Driver:
       [proc.kill() for proc in self.procs]
     else:
       [env.close() for env in self.envs]
+
+  def on_pre_step(self, callback):
+    self.pre_callbacks.append(callback)
 
   def pre_steps(self, policy, preEpisodes):
     """
@@ -106,7 +111,7 @@ class Driver:
         trans = {**obs, **acts, **outs, **logs}
         for i in range(num_episodes):
           trn = elements.tree.map(lambda x: x[i], trans)
-          [fn(trn, i, **self.kwargs) for fn in self.callbacks]
+          [fn(trn, i, **self.kwargs) for fn in self.pre_callbacks]
         #step += len(obs['is_first'])
         #episode += obs['is_last'].sum()
         #return step, episode
@@ -128,6 +133,7 @@ class Driver:
     if self.parallel:
       [pipe.send(('step', act)) for pipe, act in zip(self.pipes, acts)]
       obs = [self._receive(pipe) for pipe in self.pipes]
+      # write
     else:
       obs = [env.step(act) for env, act in zip(self.envs, acts)] # obs, list
     obs = {k: np.stack([x[k] for x in obs]) for k in obs[0].keys()}
