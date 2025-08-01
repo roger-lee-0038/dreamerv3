@@ -37,8 +37,10 @@ class DF1Env3(gym.Env):
         self.weights = self.weights / self.weights.sum()
 
         self.observation_space = gym.spaces.Box(
-            low = np.array([0] * (self.problem.n_var + 2 * self.n_objs)),
-            high = np.array([1] * self.problem.n_var + [1e30] * self.n_objs + [1] * self.n_objs),
+            #low = np.array([0] * (self.problem.n_var + 2 * self.n_objs)),
+            #high = np.array([1] * self.problem.n_var + [1e30] * self.n_objs + [10] * self.n_objs),
+            low = 0,
+            high = 1e30,
             shape = (self.problem.n_var + 2 * self.n_objs,),
             dtype = np.float32,
         )
@@ -92,7 +94,7 @@ class DF1Env3(gym.Env):
         self.ideal_point = np.min(self.pareto_fronts, axis=0)
         self.nadir_point = np.max(self.pareto_fronts, axis=0)
 
-        self.pareto_sets = np.loadtxt("/Users/Roger/Desktop/dreamerv3/for_df1/front_51.txt")
+        self.pareto_fronts = np.loadtxt("/Users/Roger/Desktop/dreamerv3/for_df1/front_51.txt")
         self.pareto_fronts = (self.pareto_fronts - self.ideal_point) / (self.nadir_point - self.ideal_point)
 
         self.start_point = np.array([0.5] * self.problem.n_var)
