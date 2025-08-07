@@ -76,7 +76,8 @@ class DF1Env2(gym.Env):
         self.weights = self.weights / self.weights.sum()
         nor_weights = self.weights * np.array([1, 1])
 
-        self.pareto_fronts = np.loadtxt("/Users/Roger/Desktop/dreamerv3/pymooTestSAR/for_df1/resFdf1.txt")
+        #self.pareto_fronts = np.loadtxt("/export/home/liwangzhen/Research/dreamerv3/for_df1/resFdf1.txt")
+        self.pareto_fronts = np.loadtxt("/export/home/liwangzhen/Research/dreamerv3/for_df1/front_51.txt")
         #self.pareto_sets = np.loadtxt("/Users/Roger/Desktop/dreamerv3/pymooTestSAR/for_df1/resXdf1.txt")
 
         self.start_point = np.array([0.5] * self.problem.n_var)

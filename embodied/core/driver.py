@@ -4,6 +4,7 @@ import cloudpickle
 import elements
 import numpy as np
 import portal
+import os
 
 
 class Driver:
@@ -85,12 +86,10 @@ class Driver:
         obs = {k: np.stack([x[k] for x in obs]) for k in obs[0].keys()}
         logs = {k: v for k, v in obs.items() if k.startswith('log/')}
         obs = {k: v for k, v in obs.items() if not k.startswith('log/')}
-        print("obs:", obs, flush=True)
 
         acts = {
             'action': np.array(action_matrix[:, le])
             }
-        print("acts:", acts, flush=True)
         #acts['reset'] = np.zeros(num_episodes, bool)
         assert all(len(x) == num_episodes for x in acts.values())
         assert all(isinstance(v, np.ndarray) for v in acts.values())
@@ -133,9 +132,30 @@ class Driver:
     if self.parallel:
       [pipe.send(('step', act)) for pipe, act in zip(self.pipes, acts)]
       obs = [self._receive(pipe) for pipe in self.pipes]
-      # write
     else:
       obs = [env.step(act) for env, act in zip(self.envs, acts)] # obs, list
+
+    add_F_flag = False
+    new_F = None
+    for obs_item in obs:
+        if obs_item.get("add_F"):
+            add_F_flag = True
+            add_F = obs_item["image"][:self.envs[0].get_n_objs()]
+            if new_F is not None:
+                new_F = np.vstack([new_F, add_F])
+            else:
+                new_F = add_F
+    if add_F_flag:
+        addFile = self.envs[0].get_addFile()
+        if os.path.exists(addFile):
+            current_F = np.loadtxt(addFile)
+        else:
+            current_F = []
+        if len(current_F):
+            np.savetxt(addFile, np.vstack([current_F, new_F]))
+        else:
+            np.savetxt(addFile, new_F)
+
     obs = {k: np.stack([x[k] for x in obs]) for k in obs[0].keys()}
     logs = {k: v for k, v in obs.items() if k.startswith('log/')}
     obs = {k: v for k, v in obs.items() if not k.startswith('log/')} # obs, dict

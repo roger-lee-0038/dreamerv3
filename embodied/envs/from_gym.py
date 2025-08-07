@@ -5,10 +5,8 @@ import embodied
 import gymnasium as gym
 import numpy as np
 
-import pickle
-import os
-
 import sys
+#sys.path.append("/export/home/liwangzhen/Research/dreamerv3/myEnv")
 sys.path.append("myEnv")
 
 
@@ -24,9 +22,9 @@ class FromGym(embodied.Env):
     self._act_dict = hasattr(self._env.action_space, 'spaces')
     self._obs_key = obs_key
     self._act_key = act_key
-    self._terminated = True
-    self._truncated = True
-    self._done = True
+    self._terminated = False
+    self._truncated = False
+    self._done = False
     self._info = None
     self._current_obs = None
     self._save_episodes = save_episodes
@@ -52,6 +50,7 @@ class FromGym(embodied.Env):
         'is_first': elements.Space(bool),
         'is_last': elements.Space(bool),
         'is_terminal': elements.Space(bool),
+        'add_F': elements.Space(bool), 
     }
 
   @functools.cached_property
@@ -76,6 +75,7 @@ class FromGym(embodied.Env):
       action = action[self._act_key]
     obs, reward, self._terminated, self._truncated, self._info = self._env.step(action)
     self._done = self._terminated or self._truncated
+    add_F = self._info.get("add_F")
     temp_dict = dict(
                       Observation=self._current_obs, 
                       Action=action, 
@@ -97,10 +97,11 @@ class FromGym(embodied.Env):
     return self._obs(
         obs, reward,
         is_last=bool(self._done),
-        is_terminal=bool(self._info.get('is_terminal', self._done)))
+        is_terminal=bool(self._info.get('is_terminal', self._done)),
+        add_F=add_F)
 
   def _obs(
-      self, obs, reward, is_first=False, is_last=False, is_terminal=False):
+      self, obs, reward, is_first=False, is_last=False, is_terminal=False, add_F=False):
     if not self._obs_dict:
       obs = {self._obs_key: obs}
     obs = self._flatten(obs)
@@ -109,7 +110,8 @@ class FromGym(embodied.Env):
         reward=np.float32(reward),
         is_first=is_first,
         is_last=is_last,
-        is_terminal=is_terminal)
+        is_terminal=is_terminal,
+        add_F=add_F)
     return obs
 
   def render(self):
@@ -151,3 +153,11 @@ class FromGym(embodied.Env):
     if hasattr(space, 'n'):
       return elements.Space(np.int32, (), 0, space.n)
     return elements.Space(space.dtype, space.shape, space.low, space.high)
+
+  def __getattr__(self, name):
+    if name.startswith('__'):
+      raise AttributeError(name)
+    try:
+      return getattr(self._env.unwrapped, name)
+    except AttributeError:
+      raise ValueError(name)

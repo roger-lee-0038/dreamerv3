@@ -6,7 +6,7 @@ import embodied
 import numpy as np
 
 
-def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
+def train_residual(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
   agent = make_agent()
   replay = make_replay()
@@ -76,10 +76,10 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       print(f"len replay {len(replay)} < {args.batch_size} * {args.batch_length}, skip training")
       return
     for _ in range(should_train(step)):
-      print(f"step for train: {step}")
+      print(f"step for train_residual: {step}")
       with elements.timer.section('stream_next'):
         batch = next(stream_train)
-      carry_train[0], outs, mets = agent.train(carry_train[0], batch)
+      carry_train[0], outs, mets = agent.train_residual(carry_train[0], batch)
       train_fps.step(batch_steps)
       if 'replay' in outs:
         replay.update(outs['replay'])

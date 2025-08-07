@@ -75,6 +75,15 @@ def main(argv=None):
         bind(make_logger, config),
         args)
 
+  elif config.script == 'train_residual':
+    embodied.run.train_residual(
+        bind(make_agent, config),
+        bind(make_replay, config, 'replay'),
+        bind(make_env, config),
+        bind(make_stream, config),
+        bind(make_logger, config),
+        args)
+
   elif config.script == 'train_eval':
     embodied.run.train_eval(
         bind(make_agent, config),

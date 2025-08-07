@@ -3,12 +3,13 @@ import numpy as np
 import gymnasium as gym
 from pymoo.problems.dynamic.df import DF1
 from pymoo.util.nds.fast_non_dominated_sort import fast_non_dominated_sort
+import os
 
 
-class DF1Env3(gym.Env):
+class DF1Env5(gym.Env):
 
     def __init__(self, max_iter=100, index=0):
-        self.problem = DF1(t=0)
+        self.problem = DF1(t=2)
 
         self.pareto_fronts = None
         self.ideal_point = None
@@ -37,12 +38,11 @@ class DF1Env3(gym.Env):
         self.weights = self.weights / self.weights.sum()
 
         self.observation_space = gym.spaces.Box(
-            low = 0, 
+            low = -1e30, 
             high = 1e30,
             shape = (self.problem.n_var + 2 * self.n_objs,),
             dtype = np.float32,
         )
-        print(self.observation_space)
 
         self.action_space = gym.spaces.Box(
             low = 0.0,
@@ -51,26 +51,42 @@ class DF1Env3(gym.Env):
             dtype = np.float32,
         )
 
+    def get_addFile(self):
+        return self.addFile
+
+    def get_n_objs(self):
+        return self.n_objs
+
     def _get_obs(self, action):
         temp_action = np.clip(
-            self.current_obs[:self.problem.n_var] + 2 * action - 1,
+            self.current_obs[self.n_objs:self.n_objs + self.problem.n_var] + 2 * action - 1,
             0,
             1,
         )
         self.F = self.problem.evaluate(temp_action.reshape(1, -1))[0]
         self.F = (self.F - self.ideal_point) / (self.nadir_point - self.ideal_point)
-        self.F = np.clip(self.F, 0, None)
-        self.current_obs = np.hstack([temp_action, self.F, self.goal_point]).astype(np.float32)
+        #self.F = np.clip(self.F, 0, None)
+        self.current_obs = np.hstack([self.F, temp_action, self.goal_point]).astype(np.float32)
         return self.current_obs
 
     def _get_reward(self, obs):
-        #F = np.clip(self.F, self.goal_point, None)
-        d0 = np.dot(self.F - self.zero_point, self.weights) / np.sqrt(np.sum(self.weights ** 2))
-        self.d1 = 0 if d0 < self.d_goal else d0 - self.d_goal
-        temp_point = self.zero_point + d0 * self.weights
-        self.d2 = np.sqrt(np.sum((self.F - temp_point) ** 2))
-        diff = self.d1 + 5 * self.d2
-        reward = 1 / (1 + diff**2)
+        F = np.clip(self.F, self.zero_point, None)
+        d0 = np.dot(F - self.zero_point, self.weights) / np.sqrt(np.sum(self.weights ** 2))
+        if d0 < self.d_goal:
+            #self.d1 = 0 if d0 < self.d_goal else d0 - self.d_goal
+            self.d1 = 0
+            temp_point = self.zero_point + d0 * self.weights
+            self.d2 = np.sqrt(np.sum((F - temp_point) ** 2))
+            #diff = self.d1 + 5 * self.d2
+            diff = self.d2
+        else:
+            self.d1 = d0 - self.d_goal
+            temp_point = self.zero_point + d0 * self.weights
+            self.d2 = np.sqrt(np.sum((F - temp_point) ** 2))
+            #diff = np.sqrt(self.d1 ** 2 + self.d2 ** 2)
+            diff = self.d1 + self.d2
+
+        reward = 1 / (1 + np.sum(diff ** 2))
         self.current_val = reward
         return reward
 
@@ -88,22 +104,30 @@ class DF1Env3(gym.Env):
         # Initialize
         self.weights = np.random.rand(self.n_objs)
         self.weights = self.weights / self.weights.sum()
-
-        self.pareto_fronts = np.loadtxt("/export/home/liwangzhen/Research/dreamerv3/for_df1/resFdf1.txt")
+        self.pareto_file = "/Users/Roger/Desktop/dreamerv3/for_df1/resFdf1.txt"
+        self.pareto_fronts = np.loadtxt(self.pareto_file)
         self.ideal_point = np.min(self.pareto_fronts, axis=0)
         self.nadir_point = np.max(self.pareto_fronts, axis=0)
 
-        self.pareto_fronts = np.loadtxt("/export/home/liwangzhen/Research/dreamerv3/for_df1/front_51.txt")
+        #self.pareto_fronts = np.loadtxt("/export/home/liwangzhen/Research/dreamerv3/for_df1/front_51.txt")
         self.pareto_fronts = (self.pareto_fronts - self.ideal_point) / (self.nadir_point - self.ideal_point)
+
+        self.addFile = "/Users/Roger/Desktop/dreamerv3/for_df1/df1v5.txt"
+
+        if os.path.exists(self.addFile):
+            temp_fronts = np.loadtxt(self.addFile)
+            if len(temp_fronts):
+                self.pareto_fronts = np.vstack([self.pareto_fronts, temp_fronts])
+        #self.zero_point = np.zeros(self.n_objs)
+        self.zero_point = np.min(self.pareto_fronts, axis=0) # not strictly zero
 
         self.start_point = np.array([0.5] * self.problem.n_var)
         self.F = self.problem.evaluate(self.start_point.reshape(1, -1))[0]
         self.F = (self.F - self.ideal_point) / (self.nadir_point - self.ideal_point)
-        self.F = np.clip(self.F, 0, None)
+        #self.F = np.clip(self.F, 0, None)
         #goal_index = np.argmin(np.tensordot(self.pareto_fronts, self.weights, axes=([-1], [-1])))
         #ref_d = np.sqrt(np.sum(self.pareto_fronts[ref_index] ** 2))
         #self.goal_point = self.weights / np.sqrt(np.sum(self.weights ** 2)) * ref_d * 0.5
-        self.zero_point = np.zeros(self.n_objs)
         diff = np.inf
         goal_index = 0
         for i, temp_F in enumerate(self.pareto_fronts):
@@ -116,11 +140,12 @@ class DF1Env3(gym.Env):
                 diff = temp_diff
                 goal_index = i
 
-        self.goal_point = self.pareto_fronts[goal_index]
+        #self.goal_point = self.pareto_fronts[goal_index]
+        self.goal_point = 0.5 * self.pareto_fronts[goal_index] + 0.5 * self.zero_point
         self.d_goal = np.sqrt(np.sum((self.goal_point - self.zero_point) ** 2))
         self.weights = self.goal_point / self.d_goal
 
-        self.current_obs = np.hstack([self.start_point, self.F, self.goal_point]).astype(np.float32)
+        self.current_obs = np.hstack([self.F, self.start_point, self.goal_point]).astype(np.float32)
         self.current_val = self._get_reward(self.current_obs)
 
         self.start_val = self.current_val
@@ -136,12 +161,13 @@ class DF1Env3(gym.Env):
         self.current_obs = self._get_obs(action)
         reward = self._get_reward(self.current_obs)
         info = {"weight": self.weights, "goal": self.goal_point, "start F": self.start_F, "start reward": self.start_val, "current obs": self.current_obs[:self.problem.n_var], "current F": self.F, "d1": self.d1, "d2": self.d2, "current reward": self.current_val}
+
+        if not np.any(np.all(self.pareto_fronts <= self.F, axis=1) & np.any(self.pareto_fronts < self.F, axis=1)):
+            if not np.any(np.all(self.pareto_fronts == self.F, axis=1)):
+                self.pareto_fronts = np.vstack([self.pareto_fronts, self.F])
+                info.update({"add_F": True})
         print(f"##### info in step: \n{info}")
 
-        # temp_F = (self.F - self.ideal_point) - (self.nadir_point - self.ideal_point)
-        # self.pareto_fronts = np.vstack([self.pareto_fronts, temp_F])
-        # front_index = fast_non_dominated_sort(self.pareto_fronts)[0]
-        # self.pareto_fronts = self.pareto_fronts[front_index]
 
         self.termination_cnt += 1
         print(f"##### Termination_cnt: {self.termination_cnt}")
@@ -153,6 +179,6 @@ class DF1Env3(gym.Env):
         return self.current_obs, reward, terminated, truncated, info
 
 gym.register(
-    id="DF1-v3",
-    entry_point=DF1Env3,
+    id="DF1-v5",
+    entry_point=DF1Env5,
 )

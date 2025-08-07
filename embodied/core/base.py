@@ -15,8 +15,14 @@ class Agent:
   def train(self, carry, data):
     raise NotImplementedError('train(carry, data) -> carry, out, metrics')
 
+  def train_residual(self, carry, data):
+    raise NotImplementedError('train_residual(carry, data) -> carry, out, metrics')
+
   def report(self, carry, data):
     raise NotImplementedError('report(carry, data) -> carry, metrics')
+
+  def report_residual(self, carry, data):
+    raise NotImplementedError('report_residual(carry, data) -> carry, metrics')
 
   def policy(self, carry, obs, known_act, mode):
     raise NotImplementedError('policy(carry, obs, known_act, mode) -> carry, act, out')

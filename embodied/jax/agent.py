@@ -25,7 +25,7 @@ class Options:
   train_devices: tuple = (0,)
   policy_mesh: str = '-1,1,1'
   train_mesh: str = '-1,1,1'
-  profiler: bool = True
+  profiler: bool = False
   expect_devices: int = 0
   use_shardmap: bool = False
   enable_policy: bool = True
@@ -110,7 +110,7 @@ class Agent(embodied.Agent):
         self.model, 'partition_rules', ([('.*', P())], []))
     elements.print('Initializing parameters...', color='yellow')
     with self.train_mesh:
-      self.params, self.train_params_sharding = self._init_params()
+      self.params, self.train_params_sharding, self.params_residual, self.train_params_sharding_residual = self._init_params()
     elements.print('Done initializing!', color='yellow')
     pattern = re.compile(self.model.policy_keys)
     self.policy_keys = [k for k in self.params.keys() if pattern.search(k)]
@@ -124,7 +124,7 @@ class Agent(embodied.Agent):
     shared_kwargs = {'use_shardmap': jaxcfg.use_shardmap}
     tm, ts = self.train_mirrored, self.train_sharded
     pm, ps = self.policy_mirrored, self.policy_sharded
-    tp, pp = self.train_params_sharding, self.policy_params_sharding
+    tp, trp, pp = self.train_params_sharding, self.train_params_sharding_residual, self.policy_params_sharding
     _, ar = self.partition_rules
     self._init_train = transform.apply(
         nj.pure(self.model.init_train), self.train_mesh,
@@ -140,9 +140,16 @@ class Agent(embodied.Agent):
         **shared_kwargs)
     allo_sharding = {k: v for k, v in tp.items() if k in self.policy_keys}
     dona_sharding = {k: v for k, v in tp.items() if k not in self.policy_keys}
+    allo_sharding_residual = {k: v for k, v in trp.items() if k in self.policy_keys}
+    dona_sharding_residual = {k: v for k, v in trp.items() if k not in self.policy_keys}
     self._train = transform.apply(
         nj.pure(self.model.train), self.train_mesh,
         (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
+        return_params=True, donate_params=True, first_outnums=(3,),
+        **shared_kwargs)
+    self._train_residual = transform.apply(
+        nj.pure(self.model.train_residual), self.train_mesh,
+        (dona_sharding_residual, allo_sharding_residual, tm, ts, ts), (trp, ts, ts, tm), ar,
         return_params=True, donate_params=True, first_outnums=(3,),
         **shared_kwargs)
     self._report = transform.apply(
@@ -314,6 +321,58 @@ class Agent(embodied.Agent):
 
     return carry, return_outs, return_mets
 
+  @elements.timer.section('jaxagent_train_residual')
+  def train_residual(self, carry, data):
+    seed = data.pop('seed')
+    assert sorted(data.keys()) == sorted(self.spaces.keys()), (
+        sorted(data.keys()), sorted(self.spaces.keys()))
+    allo_residual = {k: v for k, v in self.params_residual.items() if k in self.policy_keys}
+    dona_residual = {k: v for k, v in self.params_residual.items() if k not in self.policy_keys}
+    with self.train_lock:
+      with elements.timer.section('jit_train'):
+        with jax.profiler.StepTraceAnnotation(
+            'train', step_num=int(self.n_updates)):
+          self.params_residual, carry, outs, mets = self._train_residual(
+              dona_residual, allo_residual, seed, carry, data)
+    self.n_updates.increment()
+
+    if self.jaxcfg.enable_policy:
+      if not self.pending_sync:
+        self.pending_sync = internal.move(
+            {k: allo_residual[k] for k in self.policy_keys},
+            self.policy_params_sharding)
+      else:
+        jax.tree.map(lambda x: x.delete(), allo_residual)
+
+    return_outs = {}
+    if self.pending_outs:
+      return_outs = self._take_outs(self.pending_outs)
+    self.pending_outs = internal.fetch_async(outs)
+
+    return_mets = {}
+    if self.pending_mets:
+      return_mets = self._take_outs(self.pending_mets)
+    self.pending_mets = internal.fetch_async(mets)
+
+    if self.jaxcfg.profiler:
+      outdir, copyto = self.logdir, None
+      if str(outdir).startswith(('gs://', '/gcs/', '/cns/')):
+        copyto = outdir
+        outdir = elements.Path('/tmp/profiler')
+        outdir.mkdir()
+      if self.n_updates == 100:
+        elements.print(f'Start JAX profiler: {str(outdir)}', color='yellow')
+        jax.profiler.start_trace(str(outdir))
+      if self.n_updates == 120:
+        elements.print('Stop JAX profiler', color='yellow')
+        jax.profiler.stop_trace()
+        if copyto:
+          for subdir in elements.Path(outdir).glob('*'):
+            subdir.copy(copyto, recursive=True)
+          print(f'Copied profiler result {outdir} to {copyto}')
+
+    return carry, return_outs, return_mets
+
   @elements.timer.section('jaxagent_report')
   def report(self, carry, data):
     seed = data.pop('seed')
@@ -436,7 +495,7 @@ class Agent(embodied.Agent):
         (params_sharding, tm), (ts,), single_output=True,
         static_argnums=(2,), use_shardmap=us)(
             params, seed, GB // self.train_mesh.size if us else GB)
-    params, params_sharding = transform.init(
+    params_train, params_sharding_train = transform.init(
         self.model.train, self.train_mesh,
         (params_sharding, tm, ts, ts),
         param_partition_rules=pr,
@@ -444,7 +503,15 @@ class Agent(embodied.Agent):
         dummy_inputs=(params, seed, carry, data),
         print_partition=(len(pr) >= 2),
     )
-    return params, params_sharding
+    params_residual, params_sharding_residual = transform.init(
+        self.model.train_residual, self.train_mesh,
+        (params_sharding, tm, ts, ts),
+        param_partition_rules=pr,
+        act_partition_rules=ar,
+        dummy_inputs=(params, seed, carry, data),
+        print_partition=(len(pr) >= 2),
+    )
+    return params_train, params_sharding_train, params_residual, params_sharding_residual
 
   def _compile_train(self):
     B = self.config.batch_size
@@ -457,6 +524,9 @@ class Agent(embodied.Agent):
     allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
     dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
     self._train = self._train.lower(dona, allo, seed, carry, data).compile()
+    allo_residual = {k: v for k, v in self.params_residual.items() if k in self.policy_keys}
+    dona_residual = {k: v for k, v in self.params_residual.items() if k not in self.policy_keys}
+    self._train_residual = self._train_residual.lower(dona_residual, allo_residual, seed, carry, data).compile()
 
   def _compile_report(self):
     B = self.config.batch_size

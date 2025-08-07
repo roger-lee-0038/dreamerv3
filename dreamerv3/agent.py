@@ -35,7 +35,7 @@ class Agent(embodied.jax.Agent):
     self.act_space = act_space
     self.config = config
 
-    exclude = ('is_first', 'is_last', 'is_terminal', 'reward')
+    exclude = ('is_first', 'is_last', 'is_terminal', 'reward', 'add_F')
     enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
     dec_space = {k: v for k, v in obs_space.items() if k not in exclude}
     self.enc = {
@@ -55,6 +55,7 @@ class Agent(embodied.jax.Agent):
     scalar = elements.Space(np.float32, ())
     binary = elements.Space(bool, (), 0, 2)
     self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name='rew')
+    self.rew_residual = embodied.jax.MLPHead(scalar, **config.rewhead, name='rew_residual')
     self.con = embodied.jax.MLPHead(binary, **config.conhead, name='con')
 
     d1, d2 = config.policy_dist_disc, config.policy_dist_cont
@@ -77,9 +78,16 @@ class Agent(embodied.jax.Agent):
         self.modules, self._make_opt(**config.opt), summary_depth=1,
         name='opt')
 
+    self.modules_residual = [
+        self.rew_residual, self.pol, self.val]
+    self.opt_residual = embodied.jax.Optimizer(
+        self.modules_residual, self._make_opt(**config.opt), summary_depth=1,
+        name='opt_residual')
+
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
+    scales['rew_residual'] = scales['rew']
     self.scales = scales
 
   @property
@@ -141,6 +149,25 @@ class Agent(embodied.jax.Agent):
     carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
     metrics, (carry, entries, outs, mets) = self.opt(
         self.loss, carry, obs, prevact, training=True, has_aux=True)
+    metrics.update(mets)
+    self.slowval.update()
+    outs = {}
+    if self.config.replay_context:
+      updates = elements.tree.flatdict(dict(
+          stepid=stepid, enc=entries[0], dyn=entries[1], dec=entries[2]))
+      B, T = obs['is_first'].shape
+      assert all(x.shape[:2] == (B, T) for x in updates.values()), (
+          (B, T), {k: v.shape for k, v in updates.items()})
+      outs['replay'] = updates
+    # if self.config.replay.fracs.priority > 0:
+    #   outs['replay']['priority'] = losses['model']
+    carry = (*carry, {k: data[k][:, -1] for k in self.act_space})
+    return carry, outs, metrics
+
+  def train_residual(self, carry, data):
+    carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
+    metrics, (carry, entries, outs, mets) = self.opt_residual(
+        self.loss_residual, carry, obs, prevact, training=True, has_aux=True)
     metrics.update(mets)
     self.slowval.update()
     outs = {}
@@ -237,8 +264,102 @@ class Agent(embodied.jax.Agent):
       losses.update(los)
       metrics.update(prefix(mets, 'reploss'))
 
-    assert set(losses.keys()) == set(self.scales.keys()), (
-        sorted(losses.keys()), sorted(self.scales.keys()))
+    #assert set(losses.keys()) == set(self.scales.keys()), (
+    #    sorted(losses.keys()), sorted(self.scales.keys()))
+    metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
+    loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
+
+    carry = (enc_carry, dyn_carry, dec_carry)
+    entries = (enc_entries, dyn_entries, dec_entries)
+    outs = {'tokens': tokens, 'repfeat': repfeat, 'losses': losses}
+    return loss, (carry, entries, outs, metrics)
+
+  def loss_residual(self, carry, obs, prevact, training):
+    enc_carry, dyn_carry, dec_carry = carry
+    reset = obs['is_first']
+    B, T = reset.shape
+    losses = {}
+    metrics = {}
+
+    # World model
+    enc_carry, enc_entries, tokens = self.enc(
+        enc_carry, obs, reset, training)
+    dyn_carry, dyn_entries, los, repfeat, mets = self.dyn.loss(
+        dyn_carry, tokens, prevact, reset, training)
+    #losses.update(los)
+    #metrics.update(mets)
+    dec_carry, dec_entries, recons = self.dec(
+        dec_carry, repfeat, reset, training)
+    inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
+    #losses['rew'] = self.rew(inp, 2).loss(obs['reward'])
+    rew_residual_target = obs['reward'] - sg(self.rew(inp, 2).pred())
+    losses['rew_residual'] = self.rew_residual(inp, 2).loss(rew_residual_target)
+    #con = f32(~obs['is_terminal'])
+    #if self.config.contdisc:
+    #  con *= 1 - 1 / self.config.horizon
+    #losses['con'] = self.con(self.feat2tensor(repfeat), 2).loss(con)
+    #for key, recon in recons.items():
+    #  space, value = self.obs_space[key], obs[key]
+    #  assert value.dtype == space.dtype, (key, space, value.dtype)
+    #  target = f32(value) / 255 if isimage(space) else value
+    #  losses[key] = recon.loss(sg(target))
+
+    B, T = reset.shape
+    shapes = {k: v.shape for k, v in losses.items()}
+    assert all(x == (B, T) for x in shapes.values()), ((B, T), shapes)
+
+    # Imagination
+    K = min(self.config.imag_last or T, T)
+    H = self.config.imag_length
+    starts = self.dyn.starts(dyn_entries, dyn_carry, K)
+    policyfn = lambda feat: sample(self.pol(self.feat2tensor(feat), 1))
+    _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
+    first = jax.tree.map(
+        lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), repfeat)
+    imgfeat = concat([sg(first, skip=self.config.ac_grads), sg(imgfeat)], 1)
+    lastact = policyfn(jax.tree.map(lambda x: x[:, -1], imgfeat))
+    lastact = jax.tree.map(lambda x: x[:, None], lastact)
+    imgact = concat([imgprevact, lastact], 1)
+    assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgfeat))
+    assert all(x.shape[:2] == (B * K, H + 1) for x in jax.tree.leaves(imgact))
+    inp = self.feat2tensor(imgfeat)
+    los, imgloss_out, mets = imag_loss_residual(
+        imgact,
+        self.rew(inp, 2).pred(),
+        self.rew_residual(inp, 2).pred(),
+        self.con(inp, 2).prob(1),
+        self.pol(inp, 2),
+        self.val(inp, 2),
+        self.slowval(inp, 2),
+        self.retnorm, self.valnorm, self.advnorm,
+        update=training,
+        contdisc=self.config.contdisc,
+        horizon=self.config.horizon,
+        **self.config.imag_loss)
+    losses.update({k: v.mean(1).reshape((B, K)) for k, v in los.items()})
+    metrics.update(mets)
+
+    # Replay
+    if self.config.repval_loss:
+      feat = sg(repfeat, skip=self.config.repval_grad)
+      last, term, rew = [obs[k] for k in ('is_last', 'is_terminal', 'reward')]
+      boot = imgloss_out['ret'][:, 0].reshape(B, K)
+      feat, last, term, rew, boot = jax.tree.map(
+          lambda x: x[:, -K:], (feat, last, term, rew, boot))
+      inp = self.feat2tensor(feat)
+      los, reploss_out, mets = repl_loss(
+          last, term, rew, boot,
+          self.val(inp, 2),
+          self.slowval(inp, 2),
+          self.valnorm,
+          update=training,
+          horizon=self.config.horizon,
+          **self.config.repl_loss)
+      losses.update(los)
+      metrics.update(prefix(mets, 'reploss'))
+
+    #assert set(losses.keys()) == set(self.scales.keys()), (
+    #    sorted(losses.keys()), sorted(self.scales.keys()))
     metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
     loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
 
@@ -448,6 +569,73 @@ def imag_loss(
   outs['ret'] = ret
   return losses, outs, metrics
 
+def imag_loss_residual(
+    act, rew, rew_residual, con,
+    policy, value, slowvalue,
+    retnorm, valnorm, advnorm,
+    update,
+    contdisc=True,
+    slowtar=True,
+    horizon=333,
+    lam=0.95,
+    actent=3e-4,
+    slowreg=1.0,
+):
+  losses = {}
+  metrics = {}
+
+  voffset, vscale = valnorm.stats()
+  val = value.pred() * vscale + voffset
+  slowval = slowvalue.pred() * vscale + voffset
+  tarval = slowval if slowtar else val
+  disc = 1 if contdisc else 1 - 1 / horizon
+  weight = jnp.cumprod(disc * con, 1) / disc
+  last = jnp.zeros_like(con)
+  term = 1 - con
+  ret = lambda_return_residual(last, term, rew, rew_residual, tarval, tarval, disc, lam)
+
+  roffset, rscale = retnorm(ret, update)
+  adv = (ret - tarval[:, :-1]) / rscale
+  aoffset, ascale = advnorm(adv, update)
+  adv_normed = (adv - aoffset) / ascale
+  logpi = sum([v.logp(sg(act[k]))[:, :-1] for k, v in policy.items()])
+  ents = {k: v.entropy()[:, :-1] for k, v in policy.items()}
+  policy_loss = sg(weight[:, :-1]) * -(
+      logpi * sg(adv_normed) + actent * sum(ents.values()))
+  losses['policy'] = policy_loss
+
+  voffset, vscale = valnorm(ret, update)
+  tar_normed = (ret - voffset) / vscale
+  tar_padded = jnp.concatenate([tar_normed, 0 * tar_normed[:, -1:]], 1)
+  losses['value'] = sg(weight[:, :-1]) * (
+      value.loss(sg(tar_padded)) +
+      slowreg * value.loss(sg(slowvalue.pred())))[:, :-1]
+
+  ret_normed = (ret - roffset) / rscale
+  metrics['adv'] = adv.mean()
+  metrics['adv_std'] = adv.std()
+  metrics['adv_mag'] = jnp.abs(adv).mean()
+  metrics['rew'] = rew.mean()
+  metrics['rew_residual'] = rew_residual.mean()
+  metrics['con'] = con.mean()
+  metrics['ret'] = ret_normed.mean()
+  metrics['val'] = val.mean()
+  metrics['tar'] = tar_normed.mean()
+  metrics['weight'] = weight.mean()
+  metrics['slowval'] = slowval.mean()
+  metrics['ret_min'] = ret_normed.min()
+  metrics['ret_max'] = ret_normed.max()
+  metrics['ret_rate'] = (jnp.abs(ret_normed) >= 1.0).mean()
+  for k in act:
+    metrics[f'ent/{k}'] = ents[k].mean()
+    if hasattr(policy[k], 'minent'):
+      lo, hi = policy[k].minent, policy[k].maxent
+      metrics[f'rand/{k}'] = (ents[k].mean() - lo) / (hi - lo)
+
+  outs = {}
+  outs['ret'] = ret
+  return losses, outs, metrics
+
 
 def repl_loss(
     last, term, rew, boot,
@@ -488,6 +676,16 @@ def lambda_return(last, term, rew, val, boot, disc, lam):
   live = (1 - f32(term))[:, 1:] * disc
   cont = (1 - f32(last))[:, 1:] * lam
   interm = rew[:, 1:] + (1 - cont) * live * boot[:, 1:]
+  for t in reversed(range(live.shape[1])):
+    rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])
+  return jnp.stack(list(reversed(rets))[:-1], 1)
+
+def lambda_return_residual(last, term, rew, rew_residual, val, boot, disc, lam):
+  chex.assert_equal_shape((last, term, rew, rew_residual, val, boot))
+  rets = [boot[:, -1]]
+  live = (1 - f32(term))[:, 1:] * disc
+  cont = (1 - f32(last))[:, 1:] * lam
+  interm = rew[:, 1:] + rew_residual[:, 1:] + (1 - cont) * live * boot[:, 1:]
   for t in reversed(range(live.shape[1])):
     rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])
   return jnp.stack(list(reversed(rets))[:-1], 1)

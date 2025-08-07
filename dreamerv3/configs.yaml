@@ -124,6 +124,11 @@ size1m: &size1m
   .*\.depth: 4
   .*\.units: 64
 
+size2m: &size2m
+  .*\.rssm: {deter: 1024, hidden: 128, classes: 8}
+  .*\.depth: 8
+  .*\.units: 128
+
 size12m: &size12m
   .*\.rssm: {deter: 2048, hidden: 256, classes: 16}
   .*\.depth: 16
@@ -173,16 +178,53 @@ sar10b-v1: &badnegativerun3
     gym: {length: 20}
   pre_episodes: ''
 
+df1-v5residual: 
+  task: gym_envDF1v5:DF1-v5
+  run: {steps: 2.5e4, envs: 4, train_ratio: 64, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+  script: train_residual
+
+df1-v5: 
+  task: gym_envDF1v5:DF1-v5
+  run: {steps: 2.5e4, envs: 4, train_ratio: 64, report_every: 60, save_every: 60, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+
+df1-v4pre: 
+  task: gym_envDF1v4:DF1-v4
+  run: {steps: 1e5, envs: 4, train_ratio: 64, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: 'for_df1/df1_episodes.pkl'
+
+df1-v4residual: 
+  task: gym_envDF1v4residual:DF1-v4residual
+  run: {steps: 1e4, envs: 4, train_ratio: 64, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+  script: train_residual
+
+df1-v4: 
+  task: gym_envDF1v4:DF1-v4
+  run: {steps: 5e4, envs: 4, train_ratio: 64, report_every: 60, save_every: 60, debug: True}
+  env: 
+    gym: {length: 20}
+  pre_episodes: ''
+
 df1-v3pre: 
   task: gym_envDF1v3:DF1-v3
-  run: {steps: 1e5, envs: 4, train_ratio: 64, debug: False}
+  run: {steps: 5e5, envs: 4, train_ratio: 64, debug: False}
   env: 
     gym: {length: 20}
   pre_episodes: 'for_df1/df1_episodes.pkl'
 
 df1-v3: 
   task: gym_envDF1v3:DF1-v3
-  run: {steps: 1e5, envs: 4, train_ratio: 64, debug: False}
+  run: {steps: 5e5, envs: 4, train_ratio: 64, debug: False}
   env: 
     gym: {length: 20}
   pre_episodes: ''
