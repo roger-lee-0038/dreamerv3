@@ -40,6 +40,42 @@ class MLPHead(nj.Module):
     x = self.head(x)
     return x
 
+  def mlpOut(self, x, bdims):
+    bshape = jax.tree.leaves(x)[0].shape[:bdims]
+    x = x.reshape((*bshape, -1))
+    x = self.mlp(x)
+    return x
+
+  def headOut(self, x):
+    x = self.head(x)
+    return x
+
+class MLPLoRAHead(nj.Module):
+
+  units: int = 1024
+  layers: int = 5
+  act: str = 'silu'
+  norm: str = 'rms'
+  bias: bool = True
+  winit: str | Callable = nets.Initializer('trunc_normal')
+  binit: str | Callable = nets.Initializer('zeros')
+
+  def __init__(self, space, output, lora_r=4, lora_alpha=1.0, **hkw):
+    shared = dict(bias=self.bias, winit=self.winit, binit=self.binit)
+    mkw = dict(**shared, act=self.act, norm=self.norm, lora_r=lora_r, lora_alpha=lora_alpha)
+    hkw = dict(**shared, **hkw)
+    self.mlp = nets.MLPLoRA(self.layers, self.units, **mkw, name='mlp')
+    if isinstance(space, dict):
+      self.head = DictHead(space, output, **hkw, name='head')
+    else:
+      self.head = Head(space, output, **hkw, name='head')
+
+  def __call__(self, x, bdims):
+    bshape = jax.tree.leaves(x)[0].shape[:bdims]
+    x = x.reshape((*bshape, -1))
+    x = self.mlp(x)
+    x = self.head(x)
+    return x
 
 class DictHead(nj.Module):
 

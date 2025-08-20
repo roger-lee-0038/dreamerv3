@@ -189,6 +189,8 @@ class Agent(embodied.Agent):
 
     self._ckpt_groups = internal.grouped_ckpt_fns(
         self.params, self.jaxcfg.ckpt_chunksize)
+    self._ckpt_groups_residual = internal.grouped_ckpt_fns(
+        self.params_residual, self.jaxcfg.ckpt_chunksize)
     if self.jaxcfg.precompile:
       elements.print('Compiling train and report...', color='yellow')
       with self.train_mesh:
@@ -334,6 +336,13 @@ class Agent(embodied.Agent):
             'train', step_num=int(self.n_updates)):
           self.params_residual, carry, outs, mets = self._train_residual(
               dona_residual, allo_residual, seed, carry, data)
+    temp_params = self.params_residual
+    jax.debug.print("lora_A mean: {:.8f}", 
+                temp_params['rew_residual/mlp/linear0/lora_A'].mean()) 
+    # jax.debug.print("lora_B mean: {:.8f}, max: {:.8f}, min: {:.8f}", 
+    #             float(temp_params['rew_residual']['mlp']['linear0']['lora_B'].mean().item()), 
+    #             float(temp_params['rew_residual']['mlp']['linear0']['lora_B'].max().item()), 
+    #             float(temp_params['rew_residual']['mlp']['linear0']['lora_B'].min().item())) 
     self.n_updates.increment()
 
     if self.jaxcfg.enable_policy:
@@ -401,22 +410,27 @@ class Agent(embodied.Agent):
   def save(self):
     with self.train_lock:
       params = {}
+      params_residual = {}
       for keys, gather_fn, _ in self._ckpt_groups:
         group = {k: self.params[k] for k in keys}
         params.update(jax.device_get(gather_fn(group)))
+      for keys, gather_fn, _ in self._ckpt_groups_residual:
+        group = {k: self.params_residual[k] for k in keys}
+        params_residual.update(jax.device_get(gather_fn(group)))
     assert params
     counters = {
         'updates': int(self.n_updates),
         'batches': int(self.n_batches),
         'actions': int(self.n_actions),
     }
-    data = {'params': params, 'counters': counters}
+    data = {'params': params, 'params_residual': params_residual, 'counters': counters}
     return data
 
   @elements.timer.section('jaxagent_load')
   def load(self, data, regex=None):
     params = data['params']
     assert params
+    params_residual = data['params_residual']
 
     with contextlib.ExitStack() as stack:
       stack.enter_context(self.train_lock)
@@ -449,6 +463,35 @@ class Agent(embodied.Agent):
           group = shard_fn(internal.device_put(group, self.train_mirrored))
           loaded.update(group)
         self.params = loaded
+
+      if regex:
+        params_residual = {k: v for k, v in params_residual.items() if re.match(regex, k)}
+        keys = params_residual.keys()
+        jax.tree.map(lambda x: x.delete(), [self.params_residual[k] for k in keys])
+        params_residual = internal.ckpt_fn({k: self.params_residual[k] for k in keys})[1](
+            internal.device_put(params_residual, self.train_mirrored))
+        print('Loaded params_residual checkpoint with keys:', list(params_residual.keys()))
+        self.params_residual.update(params_residual)
+      else:
+        chex.assert_trees_all_equal_shapes(self.params_residual, params_residual)
+        jax.tree.map(lambda x: x.delete(), self.params_residual)
+
+        loaded = {}
+        for keys, _, shard_fn in self._ckpt_groups_residual:
+          group = {k: params_residual[k] for k in keys}
+          group = shard_fn(internal.device_put(group, self.train_mirrored))
+          loaded.update(group)
+        self.params_residual = loaded
+
+      for k, v in self.params.items():
+        if (not k.startswith('opt/')) and (not k.startswith('rew/')):
+          self.params_residual[k] = v.copy()
+        if k.startswith('rew/'):
+          new_k = k.replace('rew/', 'rew_residual/')
+          self.params_residual[new_k] = v.copy()
+
+      params_residual_keys = list(self.params_residual.keys())
+      print(f'Loaded params_residual with {len(params_residual_keys)} keys:\n', params_residual_keys)
 
       if self.jaxcfg.enable_policy:
         jax.tree.map(lambda x: x.delete(), self.policy_params)

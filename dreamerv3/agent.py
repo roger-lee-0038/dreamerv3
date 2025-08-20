@@ -55,7 +55,7 @@ class Agent(embodied.jax.Agent):
     scalar = elements.Space(np.float32, ())
     binary = elements.Space(bool, (), 0, 2)
     self.rew = embodied.jax.MLPHead(scalar, **config.rewhead, name='rew')
-    self.rew_residual = embodied.jax.MLPHead(scalar, **config.rewhead, name='rew_residual')
+    self.rew_residual = embodied.jax.MLPLoRAHead(scalar, **config.rewhead_residual, name='rew_residual')
     self.con = embodied.jax.MLPHead(binary, **config.conhead, name='con')
 
     d1, d2 = config.policy_dist_disc, config.policy_dist_cont
@@ -81,7 +81,7 @@ class Agent(embodied.jax.Agent):
     self.modules_residual = [
         self.rew_residual, self.pol, self.val]
     self.opt_residual = embodied.jax.Optimizer(
-        self.modules_residual, self._make_opt(**config.opt), summary_depth=1,
+        self.modules_residual, self._make_opt(**config.opt_residual), summary_depth=1,
         name='opt_residual')
 
     scales = self.config.loss_scales.copy()
@@ -291,9 +291,7 @@ class Agent(embodied.jax.Agent):
     dec_carry, dec_entries, recons = self.dec(
         dec_carry, repfeat, reset, training)
     inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
-    #losses['rew'] = self.rew(inp, 2).loss(obs['reward'])
-    rew_residual_target = obs['reward'] - sg(self.rew(inp, 2).pred())
-    losses['rew_residual'] = self.rew_residual(inp, 2).loss(rew_residual_target)
+    losses['rew_residual'] = self.rew_residual(inp, 2).loss(obs['reward'])
     #con = f32(~obs['is_terminal'])
     #if self.config.contdisc:
     #  con *= 1 - 1 / self.config.horizon
@@ -325,7 +323,7 @@ class Agent(embodied.jax.Agent):
     inp = self.feat2tensor(imgfeat)
     los, imgloss_out, mets = imag_loss_residual(
         imgact,
-        self.rew(inp, 2).pred(),
+        inp,
         self.rew_residual(inp, 2).pred(),
         self.con(inp, 2).prob(1),
         self.pol(inp, 2),
@@ -362,6 +360,7 @@ class Agent(embodied.jax.Agent):
     #    sorted(losses.keys()), sorted(self.scales.keys()))
     metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
     loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
+    jax.debug.print("loss: {}", loss)
 
     carry = (enc_carry, dyn_carry, dec_carry)
     entries = (enc_entries, dyn_entries, dec_entries)
@@ -570,7 +569,7 @@ def imag_loss(
   return losses, outs, metrics
 
 def imag_loss_residual(
-    act, rew, rew_residual, con,
+    act, inp, rew_residual, con,
     policy, value, slowvalue,
     retnorm, valnorm, advnorm,
     update,
@@ -592,7 +591,7 @@ def imag_loss_residual(
   weight = jnp.cumprod(disc * con, 1) / disc
   last = jnp.zeros_like(con)
   term = 1 - con
-  ret = lambda_return_residual(last, term, rew, rew_residual, tarval, tarval, disc, lam)
+  ret = lambda_return_residual(last, term, rew_residual, tarval, tarval, disc, lam)
 
   roffset, rscale = retnorm(ret, update)
   adv = (ret - tarval[:, :-1]) / rscale
@@ -615,7 +614,6 @@ def imag_loss_residual(
   metrics['adv'] = adv.mean()
   metrics['adv_std'] = adv.std()
   metrics['adv_mag'] = jnp.abs(adv).mean()
-  metrics['rew'] = rew.mean()
   metrics['rew_residual'] = rew_residual.mean()
   metrics['con'] = con.mean()
   metrics['ret'] = ret_normed.mean()
@@ -680,12 +678,12 @@ def lambda_return(last, term, rew, val, boot, disc, lam):
     rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])
   return jnp.stack(list(reversed(rets))[:-1], 1)
 
-def lambda_return_residual(last, term, rew, rew_residual, val, boot, disc, lam):
-  chex.assert_equal_shape((last, term, rew, rew_residual, val, boot))
+def lambda_return_residual(last, term, rew_residual, val, boot, disc, lam):
+  chex.assert_equal_shape((last, term, rew_residual, val, boot))
   rets = [boot[:, -1]]
   live = (1 - f32(term))[:, 1:] * disc
   cont = (1 - f32(last))[:, 1:] * lam
-  interm = rew[:, 1:] + rew_residual[:, 1:] + (1 - cont) * live * boot[:, 1:]
+  interm = rew_residual[:, 1:] + (1 - cont) * live * boot[:, 1:]
   for t in reversed(range(live.shape[1])):
     rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])
   return jnp.stack(list(reversed(rets))[:-1], 1)

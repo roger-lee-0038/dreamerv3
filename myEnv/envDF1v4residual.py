@@ -9,7 +9,7 @@ import os
 class DF1Env4Residual(gym.Env):
 
     def __init__(self, max_iter=100, index=0):
-        self.problem = DF1(t=2)
+        self.problem = DF1(t=0)
 
         self.pareto_fronts = None
         self.ideal_point = None
@@ -64,6 +64,8 @@ class DF1Env4Residual(gym.Env):
             1,
         )
         self.F = self.problem.evaluate(temp_action.reshape(1, -1))[0]
+        self.F[0] = 1.25 * self.F[0]
+        self.F[1] = 0.75 * self.F[1]
         self.F = (self.F - self.ideal_point) / (self.nadir_point - self.ideal_point)
         #self.F = np.clip(self.F, 0, None)
         self.current_obs = np.hstack([self.F, temp_action, self.goal_point]).astype(np.float32)
@@ -104,12 +106,13 @@ class DF1Env4Residual(gym.Env):
         # Initialize
         self.weights = np.random.rand(self.n_objs)
         self.weights = self.weights / self.weights.sum()
-        self.pareto_file = "/Users/Roger/Desktop/dreamerv3/for_df1/resFdf1.txt"
+        self.pareto_file = "/Users/Roger/Desktop/dreamerv3/for_df1/resFdf1residual.txt"
         self.pareto_fronts = np.loadtxt(self.pareto_file)
         self.ideal_point = np.min(self.pareto_fronts, axis=0)
         self.nadir_point = np.max(self.pareto_fronts, axis=0)
 
         #self.pareto_fronts = np.loadtxt("/export/home/liwangzhen/Research/dreamerv3/for_df1/front_51.txt")
+        #self.pareto_fronts = (self.pareto_fronts - self.ideal_point) / (self.nadir_point - self.ideal_point)
         self.pareto_fronts = (self.pareto_fronts - self.ideal_point) / (self.nadir_point - self.ideal_point)
 
         self.addFile = "/Users/Roger/Desktop/dreamerv3/for_df1/df1v4residual.txt"

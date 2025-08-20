@@ -90,7 +90,7 @@ def train_residual(make_agent, make_replay, make_env, make_stream, make_logger, 
   cp = elements.Checkpoint(logdir / 'ckpt')
   cp.step = step
   cp.agent = agent
-  cp.replay = replay
+  #cp.replay = replay
   if args.from_checkpoint:
     elements.checkpoint.load(args.from_checkpoint, dict(
         agent=bind(agent.load, regex=args.from_checkpoint_regex)))

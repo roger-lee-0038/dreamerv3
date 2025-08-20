@@ -87,6 +87,7 @@ defaults:
   agent:
     loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
+    opt_residual: {lr: 1e-3, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     ac_grads: False
     dyn:
       typ: rssm
@@ -98,6 +99,7 @@ defaults:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, outscale: 1.0, winit: trunc_normal_in, outer: False, kernel: 5, bspace: 8, strided: False}
     rewhead: {layers: 1, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
+    rewhead_residual: {layers: 1, units: 1024, act: silu, norm: rms, output: symexp_twohot, winit: trunc_normal_in, bins: 255}
     conhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 1.0, winit: trunc_normal_in}
     policy: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
     value: {layers: 3, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
@@ -178,21 +180,6 @@ sar10b-v1: &badnegativerun3
     gym: {length: 20}
   pre_episodes: ''
 
-df1-v5residual: 
-  task: gym_envDF1v5:DF1-v5
-  run: {steps: 2.5e4, envs: 4, train_ratio: 64, debug: True}
-  env: 
-    gym: {length: 20}
-  pre_episodes: ''
-  script: train_residual
-
-df1-v5: 
-  task: gym_envDF1v5:DF1-v5
-  run: {steps: 2.5e4, envs: 4, train_ratio: 64, report_every: 60, save_every: 60, debug: True}
-  env: 
-    gym: {length: 20}
-  pre_episodes: ''
-
 df1-v4pre: 
   task: gym_envDF1v4:DF1-v4
   run: {steps: 1e5, envs: 4, train_ratio: 64, debug: True}
@@ -202,7 +189,7 @@ df1-v4pre:
 
 df1-v4residual: 
   task: gym_envDF1v4residual:DF1-v4residual
-  run: {steps: 1e4, envs: 4, train_ratio: 64, debug: True}
+  run: {steps: 5e4, envs: 4, train_ratio: 64, report_every: 60, save_every: 60, debug: True}
   env: 
     gym: {length: 20}
   pre_episodes: ''

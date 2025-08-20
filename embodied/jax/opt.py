@@ -45,6 +45,12 @@ class Optimizer(nj.Module):
     if self.scaling:
       loss *= 1 / self.grad_scale.read()
 
+    #jax.debug.print("grads keys {} ", grads.keys())
+    if 'rew_residual/mlp/linear0/lora_A' in grads.keys():
+      jax.debug.print("grads rew_residual lora_A {}", grads['rew_residual/mlp/linear0/lora_A'])
+      jax.debug.print("grads rew_residual lora_B {}", grads['rew_residual/mlp/linear0/lora_B'])
+      jax.debug.print("grads pol {}", grads['pol/mlp/linear1/kernel'])
+
     counts = {k: math.prod(v.shape) for k, v in params.items()}
     if nj.creating():
       print(self._summarize_params(counts, self.summary_depth))

@@ -250,6 +250,33 @@ class Linear(nj.Module):
   def _scaled_winit(self, *args, **kwargs):
     return init(self.winit)(*args, **kwargs) * self.outscale
 
+class LoRALinear(nj.Module):
+
+  bias: bool = True
+  winit: str | Callable = Initializer('trunc_normal')
+  binit: str | Callable = Initializer('zeros')
+
+  def __init__(self, units, r=4, alpha=1.0):
+      self.units = (units,) if isinstance(units, int) else tuple(units)
+      self.r = r
+      self.alpha = alpha
+
+  def __call__(self, x):
+    ensure_dtypes(x)
+    size = math.prod(self.units)
+    # Original weights
+    W = jax.lax.stop_gradient(self.value('kernel', init(self.winit), (x.shape[-1], size)).astype(x.dtype))
+    # LoRA weights
+    A = self.value('lora_A', Initializer('trunc_normal'), (x.shape[-1], self.r))
+    B = self.value('lora_B', Initializer('zeros'), (self.r, size))
+    # Output: base + LoRA adaptation
+    lora_update = (self.alpha / self.r) * (A @ B)
+    x = x @ W + x @ lora_update.astype(x.dtype)
+    if self.bias:
+      x += self.value('bias', init(self.binit), size).astype(x.dtype)
+    x = x.reshape((*x.shape[:-1], *self.units))
+    return x
+
 
 class BlockLinear(nj.Module):
 
@@ -581,6 +608,32 @@ class MLP(nj.Module):
     x = x.reshape([-1, x.shape[-1]])
     for i in range(self.layers):
       x = self.sub(f'linear{i}', Linear, self.units, **self.kw)(x)
+      x = self.sub(f'norm{i}', Norm, self.norm)(x)
+      x = act(self.act)(x)
+    x = x.reshape((*shape, x.shape[-1]))
+    return x
+
+class MLPLoRA(nj.Module):
+
+  act: str = 'silu'
+  norm: str = 'rms'
+  bias: bool = True
+  winit: str | Callable = Initializer('trunc_normal')
+  binit: str | Callable = Initializer('zeros')
+
+  def __init__(self, layers=5, units=1024, lora_r=4, lora_alpha=1.0):
+    self.layers = layers
+    self.units = units
+    self.lora_r = lora_r
+    self.lora_alpha = lora_alpha
+    self.kw = dict(bias=self.bias, winit=self.winit, binit=self.binit)
+
+  def __call__(self, x):
+    shape = x.shape[:-1]
+    x = x.astype(COMPUTE_DTYPE)
+    x = x.reshape([-1, x.shape[-1]])
+    for i in range(self.layers):
+      x = self.sub(f'linear{i}', LoRALinear, self.units, r=self.lora_r, alpha=self.lora_alpha)(x)
       x = self.sub(f'norm{i}', Norm, self.norm)(x)
       x = act(self.act)(x)
     x = x.reshape((*shape, x.shape[-1]))
